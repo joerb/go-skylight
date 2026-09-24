@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - Integration test cleanup failures were silently swallowed (`t.Logf`); now surface as test failures (`t.Errorf`)
 - `IsNotFound` typed check replaces fragile `strings.Contains(err.Error(), "404")` in integration tests
+- `chore create`/`chore update`: recurrence flags were ignored; now sent as an RRULE in `recurrence_set`
 
 ## [v0.0.12] - 2026-03-18
 

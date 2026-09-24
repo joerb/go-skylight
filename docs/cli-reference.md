@@ -87,6 +87,9 @@ skylight chore streak [--days N] [--assignee-id ID]
 > `--date DATE` becomes a same-day window, `--up-for-grabs` uses the next 7 days,
 > and bare `chore list` / `chore search` use the current calendar month. When
 > passed explicitly, `--after` and `--before` must be used together.
+>
+> On `chore update`, `--frequency`/`--recurrence-days` replace the whole schedule,
+> so pass `--interval` and `--end-date` again if the chore uses them.
 
 ## Rewards
 
