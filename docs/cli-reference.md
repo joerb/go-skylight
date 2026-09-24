@@ -72,9 +72,9 @@ skylight chore list [--date DATE] [--assignee-id ID] [--status S] [--after DATE]
 skylight chore get --chore-id ID
 skylight chore search --query TERM [--assignee-id ID] [--status S] [--after DATE] [--before DATE]
 skylight chore create --title TITLE [--description D] [--points N] [--assignee-id ID] [--date DATE] [--recurring] [--up-for-grabs] \
-    [--frequency daily|weekly|monthly] [--interval N] [--recurrence-days mon,wed] [--end-date DATE] [--recur-from scheduled|completed]
+    [--frequency daily|weekly|monthly] [--interval N] [--recurrence-days mon,wed] [--end-date DATE]
 skylight chore update --chore-id ID [--title T] [--description D] [--status S] [--points N] [--assignee-id ID] [--date DATE] [--up-for-grabs] \
-    [--frequency daily|weekly|monthly] [--interval N] [--recurrence-days mon,wed] [--end-date DATE] [--recur-from scheduled|completed]
+    [--frequency daily|weekly|monthly] [--interval N] [--recurrence-days mon,wed] [--end-date DATE]
 skylight chore delete --chore-id ID
 skylight chore complete --chore-id ID
 skylight chore skip --chore-id ID [--defer-until DATE]

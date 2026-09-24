@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - Default `skylight-api-version` header bumped from `2026-03-01` to `2026-06-01` to support deletion of Up for Grabs chores
 - Go version updated to 1.27.1 (`go.mod`, CI, Dockerfile)
 - Dependency: `golang.org/x/time` bumped to v0.16.0
+- `--recur-from` documented as having no effect (the API does not store it)
 
 ### Fixed
 - Integration test cleanup failures were silently swallowed (`t.Logf`); now surface as test failures (`t.Errorf`)
