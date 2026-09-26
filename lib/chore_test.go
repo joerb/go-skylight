@@ -1075,6 +1075,12 @@ func TestCreateChoreRecurring(t *testing.T) {
 			input:   ChoreData{Title: "Bins", Interval: 2},
 			wantErr: true,
 		},
+		{
+			name:       "up-for-grabs interval without a frequency",
+			input:      ChoreData{Title: "Bins", Interval: 2},
+			upForGrabs: true,
+			wantErr:    true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1121,6 +1127,9 @@ func TestCreateChoreRecurring(t *testing.T) {
 			}
 			if got := body["recurring_until"]; got != tc.wantUntil {
 				t.Errorf("recurring_until: want %v got %v", tc.wantUntil, got)
+			}
+			if got, ok := body["end_date"]; ok {
+				t.Errorf("end_date should not be sent, got %v", got)
 			}
 			if tc.upForGrabs && body["up_for_grabs"] != true {
 				t.Errorf("expected up_for_grabs=true, got %v", body["up_for_grabs"])

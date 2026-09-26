@@ -192,7 +192,13 @@ func isRecurring(chore ChoreData) bool {
 
 // withRule fills RecurrenceSet (and RecurringUntil from EndDate) for a recurring chore.
 func withRule(chore ChoreData) (ChoreData, error) {
-	if !isRecurring(chore) || len(chore.RecurrenceSet) > 0 {
+	if !isRecurring(chore) {
+		if chore.Interval != 0 || chore.EndDate != "" {
+			return chore, errRuleRequired
+		}
+		return chore, nil
+	}
+	if len(chore.RecurrenceSet) > 0 {
 		return chore, nil
 	}
 	rrule, err := choreRRule(chore)
@@ -201,6 +207,7 @@ func withRule(chore ChoreData) (ChoreData, error) {
 	}
 	chore.RecurrenceSet = []string{rrule}
 	chore.RecurringUntil = chore.EndDate
+	chore.EndDate = ""
 	return chore, nil
 }
 
@@ -317,9 +324,6 @@ func (c *Client) GetChore(ctx context.Context, frameID, choreID string) (*Chore,
 // to their base ID before the request. PUT ignores frequency, interval and recurrence_days
 // too, so a recurrence change is sent as a replacement RRULE, which replaces the whole schedule.
 func (c *Client) UpdateChore(ctx context.Context, frameID, choreID string, chore ChoreData) (*Chore, error) {
-	if !isRecurring(chore) && (chore.Interval != 0 || chore.EndDate != "") {
-		return nil, errRuleRequired
-	}
 	chore, err := withRule(chore)
 	if err != nil {
 		return nil, err
