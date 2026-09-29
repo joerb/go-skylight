@@ -139,13 +139,31 @@ centered on today. Use --resources to limit which resource types are included.`,
 
 		if want[exportResourceChores] {
 			launch(exportResourceChores, func() error {
-				chores, err := client.ListChores(ctx, frameID, lib.ChoreListOptions{After: start, Before: end, IncludeLate: true})
-				if err == nil {
-					mu.Lock()
-					data.Chores = chores
-					mu.Unlock()
+				opts := lib.ChoreListOptions{After: start, Before: end, IncludeLate: true}
+				chores, err := client.ListChores(ctx, frameID, opts)
+				if err != nil {
+					return err
 				}
-				return err
+				// The plain chore query leaves out up-for-grabs chores. Keep one
+				// row per ID in case a chore comes back from both queries.
+				opts.UpForGrabs = true
+				grabs, err := client.ListChores(ctx, frameID, opts)
+				if err != nil {
+					return err
+				}
+				seen := make(map[string]bool, len(chores))
+				for _, c := range chores {
+					seen[c.ID] = true
+				}
+				for _, c := range grabs {
+					if !seen[c.ID] {
+						chores = append(chores, c)
+					}
+				}
+				mu.Lock()
+				data.Chores = chores
+				mu.Unlock()
+				return nil
 			})
 		}
 		if want[exportResourceRewards] {

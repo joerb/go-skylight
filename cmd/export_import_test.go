@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,7 +134,7 @@ func TestRunImportDryRun_PrintsCounts(t *testing.T) {
 		exportResourceChores:  true,
 		exportResourceRewards: true,
 	}
-	runImportDryRun(data, want)
+	runImportDryRun(data, want, importTestToday)
 
 	w.Close()
 	os.Stdout = old
@@ -168,7 +169,7 @@ func TestRunImportDryRun_ExcludesRoutineChoresFromCount(t *testing.T) {
 		Chores: []lib.Chore{{ID: "1"}, {ID: "2", Routine: true}, {ID: "3", Routine: true}},
 	}
 	want := map[string]bool{exportResourceChores: true}
-	runImportDryRun(data, want)
+	runImportDryRun(data, want, importTestToday)
 
 	w.Close()
 	os.Stdout = old
@@ -182,6 +183,69 @@ func TestRunImportDryRun_ExcludesRoutineChoresFromCount(t *testing.T) {
 	}
 	if strings.Contains(out, "3 items") {
 		t.Errorf("expected routine chores excluded from count, got: %s", out)
+	}
+}
+
+func TestImportCmd_DryRunChoreCount(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{
+			// Written before start_time/emoji_icon were exported.
+			name: "old export file restores each series once",
+			file: `{"exported_at":"2026-09-01T08:00:00+10:00","frame_id":"test-frame","chores":[
+				{"id":"100-2026-08-27","title":"Bins","status":"complete","due_date":"2026-08-27","recurring":true,"assignee_id":"cat1","recurrence_set":["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"]},
+				{"id":"100-2026-09-03","title":"Bins","status":"pending","due_date":"2026-09-03","recurring":true,"assignee_id":"cat1","recurrence_set":["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"]},
+				{"id":"100-2026-09-10","title":"Bins","status":"pending","due_date":"2026-09-10","recurring":true,"assignee_id":"cat1","recurrence_set":["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"]},
+				{"id":"701","title":"Return library books","status":"complete","due_date":"2026-08-20","recurring":false,"assignee_id":"cat2"}
+			]}`,
+			want: "chores     1 items",
+		},
+		{
+			// exported_at is ahead of this machine's clock, and its date in its
+			// own offset is a day after its UTC date.
+			name: "series that ended before the export date is skipped",
+			file: `{"exported_at":"2099-01-02T08:00:00+10:00","frame_id":"test-frame","chores":[
+				{"id":"400-2099-01-01","title":"Old schedule","status":"complete","due_date":"2099-01-01","recurring":true,"recurrence_set":["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20990101"]},
+				{"id":"100-2099-01-07","title":"Bins","status":"pending","due_date":"2099-01-07","recurring":true,"recurrence_set":["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"]}
+			]}`,
+			want: "chores     1 items",
+		},
+		{
+			// A restore made long after the export uses the local date.
+			name: "series that ended between the export date and today is skipped",
+			file: `{"exported_at":"2020-01-01T08:00:00+10:00","frame_id":"test-frame","chores":[
+				{"id":"400-2020-01-01","title":"Old schedule","status":"pending","due_date":"2020-01-01","recurring":true,"recurrence_set":["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20200601"]},
+				{"id":"100-2020-01-02","title":"Bins","status":"pending","due_date":"2020-01-02","recurring":true,"recurrence_set":["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"]}
+			]}`,
+			want: "chores     1 items",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "export.json")
+			if err := os.WriteFile(file, []byte(tc.file), 0o600); err != nil {
+				t.Fatalf("writing export: %v", err)
+			}
+
+			origFile, origResources, origDryRun, origFrameID := importFile, importResources, importDryRun, frameID
+			importFile, importResources, importDryRun, frameID = file, "chores", true, "test-frame"
+			t.Cleanup(func() {
+				importFile, importResources, importDryRun, frameID = origFile, origResources, origDryRun, origFrameID
+			})
+
+			out := captureStdout(func() {
+				if err := importCmd.RunE(importCmd, nil); err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			})
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("expected %q, got: %s", tc.want, out)
+			}
+		})
 	}
 }
 
@@ -204,7 +268,7 @@ func TestRunImportDryRun_ExcludesCategories(t *testing.T) {
 		exportResourceBounties:   true,
 		exportResourceCategories: true,
 	}
-	runImportDryRun(data, want)
+	runImportDryRun(data, want, importTestToday)
 
 	w.Close()
 	os.Stdout = old
@@ -270,7 +334,7 @@ func exportMockHandler() http.HandlerFunc {
 		// caller filters/dedupes it differently.
 		case strings.HasSuffix(r.URL.Path, "/chores"):
 			fmt.Fprint(w, `{"data":[
-				{"id":"c1","attributes":{"summary":"Dishes"}},
+				{"id":"c1","attributes":{"summary":"Dishes","start_time":"19:00","emoji_icon":"🍽️"}},
 				{"id":"rt1","attributes":{"summary":"Morning Routine","routine":true,"recurrence_set":["RRULE:FREQ=DAILY;INTERVAL=1;BYHOUR=6"]}}
 			]}`)
 		case strings.HasSuffix(r.URL.Path, "/rewards"):
@@ -322,11 +386,68 @@ func TestExportCmd_AllResourcesToStdout(t *testing.T) {
 	if len(data.Chores) != 2 || len(data.Rewards) != 1 || len(data.Lists) != 1 || len(data.Recipes) != 1 || len(data.CalendarEvents) != 1 {
 		t.Errorf("expected one of each legacy resource (chores=2), got: %+v", data)
 	}
+	if len(data.Chores) > 0 && (data.Chores[0].StartTime != "19:00" || data.Chores[0].EmojiIcon != "🍽️") {
+		t.Errorf("expected chore start_time and emoji_icon exported, got: %+v", data.Chores[0])
+	}
 	if len(data.Routines) != 1 {
 		t.Errorf("expected 1 routine, got %d", len(data.Routines))
 	}
 	if len(data.Categories) != 1 {
 		t.Errorf("expected 1 category, got %d", len(data.Categories))
+	}
+}
+
+// The plain chore query leaves out up-for-grabs chores, so export asks for
+// them separately over the same window and keeps one row per ID.
+func TestExportCmd_IncludesUpForGrabsChores(t *testing.T) {
+	var plainQuery, grabsQuery url.Values
+	newCmdTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/chores") && r.URL.Query().Get("include_up_for_grabs") == "true":
+			grabsQuery = r.URL.Query()
+			fmt.Fprint(w, `{"data":[
+				{"id":"u1","attributes":{"summary":"Wash car","up_for_grabs":true}},
+				{"id":"u2","attributes":{"summary":"Sweep porch","up_for_grabs":true}}
+			]}`)
+		case strings.HasSuffix(r.URL.Path, "/chores"):
+			plainQuery = r.URL.Query()
+			fmt.Fprint(w, `{"data":[
+				{"id":"c1","attributes":{"summary":"Dishes"}},
+				{"id":"u2","attributes":{"summary":"Sweep porch","up_for_grabs":true}}
+			]}`)
+		default:
+			fmt.Fprint(w, `{"data":{"id":"test-frame","attributes":{"name":"Kitchen","timezone":"UTC"}}}`)
+		}
+	})
+
+	origFile, origResources, origDays := exportOutputFile, exportResources, exportDays
+	exportOutputFile, exportResources, exportDays = "", "chores", 7
+	t.Cleanup(func() {
+		exportOutputFile, exportResources, exportDays = origFile, origResources, origDays
+	})
+
+	out := captureStdout(func() {
+		if err := exportCmd.RunE(exportCmd, nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	var data ExportData
+	if err := json.Unmarshal([]byte(out), &data); err != nil {
+		t.Fatalf("expected valid JSON on stdout, got error %v for: %s", err, out)
+	}
+	var ids []string
+	for _, c := range data.Chores {
+		ids = append(ids, c.ID)
+	}
+	if strings.Join(ids, ",") != "c1,u2,u1" {
+		t.Errorf("expected chores c1,u2,u1, got %v", ids)
+	}
+	for _, k := range []string{"after", "before", "include_late"} {
+		if grabsQuery.Get(k) == "" || grabsQuery.Get(k) != plainQuery.Get(k) {
+			t.Errorf("expected the up-for-grabs query to match the plain one on %s, got %q vs %q", k, grabsQuery.Get(k), plainQuery.Get(k))
+		}
 	}
 }
 

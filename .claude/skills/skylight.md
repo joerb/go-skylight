@@ -158,7 +158,7 @@ skylight rotation create --chores "Dishes,Vacuum,Laundry" --assignee-ids "ID1,ID
 ### Export / Import
 
 ```bash
-skylight export [--resources chores,rewards,lists,recipes,sittings,calendar] [--output-file backup.json]
+skylight export [--resources chores,rewards,lists,recipes,sittings,calendar,routines,bounties,categories,photos] [--days N] [--output-file backup.json]
 skylight import --file backup.json [--dry-run] [--resources chores,rewards]
 ```
 

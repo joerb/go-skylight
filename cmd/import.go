@@ -1,11 +1,16 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/sebrandon1/go-skylight/lib"
 	"github.com/spf13/cobra"
@@ -58,7 +63,15 @@ var importCmd = &cobra.Command{
 
 Each resource type is created in the target frame. IDs from the source frame are
 ignored — new IDs are assigned by the API. Use --resources to import only specific
-types. Use --dry-run to preview what would be created without making API calls.`,
+types. Use --dry-run to preview what would be created without making API calls.
+
+Recurring chores are recreated once per series with their recurrence rule, starting
+from the first exported occurrence on or after today that isn't done yet. If the
+backup has none (for example, it is older than --days), the series starts on its
+latest exported occurrence, so past dates may show as late. Series that have
+already ended and completed one-off chores are skipped. Import into the frame the
+export came from: assignee (category) IDs are not remapped. Running import twice
+creates everything twice.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireFrameID(); err != nil {
 			return err
@@ -80,8 +93,14 @@ types. Use --dry-run to preview what would be created without making API calls.`
 		}
 		want := toWantMap(resources)
 
+		// Never before the export's own date: a machine clock behind the
+		// frame's would otherwise bring back series that ended the day before.
+		today := time.Now().Format(lib.DateFormat)
+		if t, err := time.Parse(time.RFC3339, data.ExportedAt); err == nil {
+			today = max(today, t.Format(lib.DateFormat))
+		}
 		if importDryRun {
-			runImportDryRun(data, want)
+			runImportDryRun(data, want, today)
 			return nil
 		}
 
@@ -89,26 +108,14 @@ types. Use --dry-run to preview what would be created without making API calls.`
 		if err != nil {
 			return err
 		}
-		return runImport(cmd.Context(), client, data, want)
+		return runImport(cmd.Context(), client, data, want, today)
 	},
 }
 
-// nonRoutineChoreCount excludes Routine==true chores, matching importChores'
-// behavior: those are imported separately via importRoutines, so counting
-// them here would overstate how many plain chores will actually be created.
-func nonRoutineChoreCount(chores []lib.Chore) int {
-	n := 0
-	for _, c := range chores {
-		if !c.Routine {
-			n++
-		}
-	}
-	return n
-}
-
-func runImportDryRun(data ExportData, want map[string]bool) {
+func runImportDryRun(data ExportData, want map[string]bool, today string) {
+	chores, _ := choresToImport(data.Chores, today)
 	counts := map[string]int{
-		exportResourceChores:     nonRoutineChoreCount(data.Chores),
+		exportResourceChores:     len(chores),
 		exportResourceRewards:    len(data.Rewards),
 		exportResourceLists:      len(data.Lists),
 		exportResourceRecipes:    len(data.Recipes),
@@ -127,7 +134,7 @@ func runImportDryRun(data ExportData, want map[string]bool) {
 	}
 }
 
-func runImport(ctx context.Context, client *lib.Client, data ExportData, want map[string]bool) error {
+func runImport(ctx context.Context, client *lib.Client, data ExportData, want map[string]bool, today string) error {
 	type importFn = func() (int, int)
 	var tasks []importFn
 
@@ -135,7 +142,7 @@ func runImport(ctx context.Context, client *lib.Client, data ExportData, want ma
 		tasks = append(tasks, func() (int, int) { return importRewards(ctx, client, data.Rewards) })
 	}
 	if want[exportResourceChores] {
-		tasks = append(tasks, func() (int, int) { return importChores(ctx, client, data.Chores) })
+		tasks = append(tasks, func() (int, int) { return importChores(ctx, client, data.Chores, today) })
 	}
 	if want[exportResourceLists] {
 		tasks = append(tasks, func() (int, int) { return importLists(ctx, client, data.Lists) })
@@ -183,18 +190,112 @@ func importRewards(ctx context.Context, client *lib.Client, rewards []lib.Reward
 // importRoutines already handles it separately. Without this, a round-trip
 // export/import would create each routine twice -- once as a plain
 // non-recurring chore, once as the correct routine.
-func importChores(ctx context.Context, client *lib.Client, chores []lib.Chore) (total, failed int) {
-	return parallelImport(chores, func(c lib.Chore) (int, int) {
-		if c.Routine {
-			fmt.Fprintf(os.Stderr, "Skipping routine chore %q (import routines separately with --resources routines)\n", c.Title)
-			return 0, 0
+func importChores(ctx context.Context, client *lib.Client, chores []lib.Chore, today string) (total, failed int) {
+	creates, routines := choresToImport(chores, today)
+	for _, title := range routines {
+		fmt.Fprintf(os.Stderr, "Skipping routine chore %q (import routines separately with --resources routines)\n", title)
+	}
+	return parallelImport(creates, func(d lib.ChoreData) (int, int) {
+		create := client.CreateChore
+		if d.UpForGrabs {
+			create = client.CreateUpForGrabsChore
 		}
-		if _, err := client.CreateChore(ctx, frameID, lib.ChoreData{Title: c.Title, DueDate: c.DueDate, Points: c.Points, AssigneeID: c.AssigneeID}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating chore %q: %v\n", c.Title, err)
+		if _, err := create(ctx, frameID, d); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating chore %q: %v\n", d.Title, err)
 			return 1, 1
 		}
 		return 1, 0
 	})
+}
+
+// choresToImport turns exported chore rows, one per occurrence, into the chores
+// to create: one per recurring series still running on today, and one per
+// non-recurring row that is not complete or skipped. It also returns the title
+// of each routine series, which importRoutines creates instead.
+func choresToImport(chores []lib.Chore, today string) (creates []lib.ChoreData, routines []string) {
+	series := map[string][]lib.Chore{}
+	var order []string
+	routineSeen := map[string]bool{}
+	for i, c := range chores {
+		base, _, _ := strings.Cut(c.ID, "-")
+		if base == "" {
+			base = "#" + strconv.Itoa(i)
+		}
+		switch {
+		case c.Routine:
+			if !routineSeen[base] {
+				routineSeen[base] = true
+				routines = append(routines, c.Title)
+			}
+		case len(c.RecurrenceSet) > 0:
+			if _, ok := series[base]; !ok {
+				order = append(order, base)
+			}
+			series[base] = append(series[base], c)
+		case !isDone(c):
+			creates = append(creates, choreData(c))
+		}
+	}
+	for _, base := range order {
+		if d, ok := seriesChore(series[base], today); ok {
+			creates = append(creates, d)
+		}
+	}
+	return creates, routines
+}
+
+// seriesChore recreates a recurring series from its exported occurrences, or
+// reports false if its UNTIL date has passed. It starts on the first occurrence
+// on or after today that isn't done, else the latest one: a real occurrence
+// keeps INTERVAL>1 rules in phase, and not starting earlier avoids recreating
+// past occurrences.
+func seriesChore(rows []lib.Chore, today string) (lib.ChoreData, bool) {
+	until := ruleUntil(rows[0].RecurrenceSet)
+	if until != "" && until < today {
+		return lib.ChoreData{}, false
+	}
+	var next, latest string
+	for _, c := range rows {
+		if c.DueDate >= today && !isDone(c) && (next == "" || c.DueDate < next) {
+			next = c.DueDate
+		}
+		latest = max(latest, c.DueDate)
+	}
+	d := choreData(rows[0])
+	d.DueDate = cmp.Or(next, latest)
+	d.RecurringUntil = until
+	return d, true
+}
+
+func isDone(c lib.Chore) bool {
+	return c.Status == lib.ChoreStatusComplete || c.Status == lib.ChoreStatusSkipped
+}
+
+func choreData(c lib.Chore) lib.ChoreData {
+	return lib.ChoreData{
+		Title:         c.Title,
+		Description:   c.Description,
+		DueDate:       c.DueDate,
+		StartTime:     c.StartTime,
+		EmojiIcon:     c.EmojiIcon,
+		Points:        c.Points,
+		AssigneeID:    c.AssigneeID,
+		UpForGrabs:    c.UpForGrabs,
+		RecurrenceSet: c.RecurrenceSet,
+	}
+}
+
+var untilRe = regexp.MustCompile(`UNTIL=(\d{4})(\d{2})(\d{2})`)
+
+// ruleUntil returns the rule's UNTIL as YYYY-MM-DD, or "" if it has none. The
+// API needs the end date as recurring_until too, and older exports don't carry it.
+func ruleUntil(set []string) string {
+	for _, line := range set {
+		if m := untilRe.FindStringSubmatch(line); m != nil {
+			return m[1] + "-" + m[2] + "-" + m[3]
+		}
+	}
+	return ""
 }
 
 // importLists parallelizes across lists, but each list's own items are
