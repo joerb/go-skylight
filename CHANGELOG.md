@@ -4,24 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-- `profile list|create|update|delete` — household member profile management
-- `label list|create|update|delete` — event/task label management
-- `frame update` — patch screensaver settings (`--screensaver-show-weather`, `--screensaver-show-events`)
-- `reward list` now accepts `--assignee-id`, `--points-min`, `--points-max`, `--status` filters
-- Integration test pre-run sweep (`TestMain`) cleans up `integration-test-*` artifacts before each run
+## [v0.2.3] - 2026-09-29
 
-### Changed
-- `DeleteChore` split into `DeleteChore` (one-time) and `DeleteRecurringChore` (recurring) in `lib/chore.go`; the CLI `chore delete` command fetches the chore first to pick the right variant
-- Default `skylight-api-version` header bumped from `2026-03-01` to `2026-06-01` to support deletion of Up for Grabs chores
-- Go version updated to 1.27.1 (`go.mod`, CI, Dockerfile)
-- Dependency: `golang.org/x/time` bumped to v0.16.0
-- `--recur-from` documented as having no effect (the API does not store it)
+### Added
+- `calendar schedule` — agenda-style view of upcoming events with date grouping and time formatting (#473, #486)
+- `frame list-albums` — list all photo albums available on the frame (#485)
 
 ### Fixed
-- Integration test cleanup failures were silently swallowed (`t.Logf`); now surface as test failures (`t.Errorf`)
-- `IsNotFound` typed check replaces fragile `strings.Contains(err.Error(), "404")` in integration tests
-- `chore create`/`chore update`: recurrence flags were ignored; now sent as an RRULE in `recurrence_set`
+- `chore create`/`chore update`: recurrence flags (`--frequency`, `--recurrence-days`, `--interval`, `--end-date`) were silently ignored; now properly sent as an RRULE via the `create_multiple` endpoint (#481)
+- `GetChore` rewritten to use the list endpoint with date-window filter instead of searching the full month; composite instance IDs now extract the embedded date for the query window (#482, #484)
+- `DeleteChore` integration tests now properly sweep recurring chores with `DeleteRecurringChore` instead of leaving orphaned instances (#483)
+- `--recur-from` documented as having no effect (the API does not store it) (#481)
+
+## [v0.2.2] - 2026-09-21
+
+### Fixed
+- `DeleteChore` split into `DeleteChore` (one-time) and `DeleteRecurringChore` (recurring) — the Skylight API now rejects `apply_to=all` on non-recurring chores (#475)
+- Bump default `skylight-api-version` header from `2026-03-01` to `2026-06-01` to support deletion of Up for Grabs chores (#476)
+- Integration test cleanup failures now surface as `t.Errorf` instead of silent `t.Logf`; `IsNotFound` typed checks replace fragile string-contains error matching (#475)
+
+### Added
+- Integration test pre-run sweep (`TestMain`) removes `integration-test-*` artifacts left by interrupted runs (#475)
+
+### Changed
+- Go version updated to 1.27.1 (`go.mod`, CI, Dockerfile) (#472)
+- Dependency: `golang.org/x/time` bumped to v0.16.0 (#474)
 
 ## [v0.0.12] - 2026-03-18
 
