@@ -3,16 +3,23 @@ package cmd
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sebrandon1/go-skylight/lib"
 )
+
+// importTestToday is the import day for chore tests; export rows are dated
+// around it the way a 90-day export window would date them.
+const importTestToday = "2026-10-01"
 
 // newImportTestClient builds a mock client that serves canned success
 // responses for every Create*/AddListItem endpoint import.go calls, except
@@ -94,7 +101,7 @@ func TestImportRewards(t *testing.T) {
 func TestImportChores(t *testing.T) {
 	t.Run("all succeed", func(t *testing.T) {
 		client := newImportTestClient(t, nil)
-		total, failed := importChores(context.Background(), client, []lib.Chore{{Title: "Walk dog"}, {Title: "Dishes"}})
+		total, failed := importChores(context.Background(), client, []lib.Chore{{Title: "Walk dog"}, {Title: "Dishes"}}, importTestToday)
 		if total != 2 || failed != 0 {
 			t.Errorf("got total=%d failed=%d, want total=2 failed=0", total, failed)
 		}
@@ -102,7 +109,7 @@ func TestImportChores(t *testing.T) {
 
 	t.Run("failure counted", func(t *testing.T) {
 		client := newImportTestClient(t, map[string]bool{"/chores": true})
-		total, failed := importChores(context.Background(), client, []lib.Chore{{Title: "Walk dog"}})
+		total, failed := importChores(context.Background(), client, []lib.Chore{{Title: "Walk dog"}}, importTestToday)
 		if total != 1 || failed != 1 {
 			t.Errorf("got total=%d failed=%d, want total=1 failed=1", total, failed)
 		}
@@ -117,7 +124,7 @@ func TestImportChores(t *testing.T) {
 		total, failed := importChores(context.Background(), client, []lib.Chore{
 			{Title: "Walk dog"},
 			{Title: "Make bed", Routine: true},
-		})
+		}, importTestToday)
 		if total != 1 || failed != 0 {
 			t.Errorf("got total=%d failed=%d, want total=1 failed=0 (routine chore skipped)", total, failed)
 		}
@@ -130,12 +137,231 @@ func TestImportChores(t *testing.T) {
 	t.Run("warns on stderr when skipping a routine chore", func(t *testing.T) {
 		client := newImportTestClient(t, nil)
 		stderr := captureStderr(func() {
-			importChores(context.Background(), client, []lib.Chore{{Title: "Make bed", Routine: true}})
+			importChores(context.Background(), client, []lib.Chore{{Title: "Make bed", Routine: true}}, importTestToday)
 		})
 		if !strings.Contains(stderr, "Make bed") {
 			t.Errorf("expected warning naming the skipped routine chore, got: %s", stderr)
 		}
 	})
+}
+
+func TestChoresToImport(t *testing.T) {
+	weekly := []string{"RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH"}
+	tests := []struct {
+		name         string
+		chores       []lib.Chore
+		want         []lib.ChoreData
+		wantRoutines []string
+	}{
+		{
+			name: "occurrences of a series become one chore starting on its first occurrence from today",
+			chores: []lib.Chore{
+				{ID: "100-2026-09-24", Title: "Bins", Description: "Front and back", Status: "complete", DueDate: "2026-09-24", Points: 2, AssigneeID: "cat1", Recurring: true, RecurrenceSet: weekly, StartTime: "18:00", EmojiIcon: "🗑️"},
+				{ID: "100-2026-10-08", Title: "Bins", Description: "Front and back", Status: "pending", DueDate: "2026-10-08", Points: 2, AssigneeID: "cat1", Recurring: true, RecurrenceSet: weekly, StartTime: "18:00", EmojiIcon: "🗑️"},
+				{ID: "100-2026-10-01", Title: "Bins", Description: "Front and back", Status: "pending", DueDate: "2026-10-01", Points: 2, AssigneeID: "cat1", Recurring: true, RecurrenceSet: weekly, StartTime: "18:00", EmojiIcon: "🗑️"},
+			},
+			want: []lib.ChoreData{{Title: "Bins", Description: "Front and back", DueDate: "2026-10-01", Points: 2, AssigneeID: "cat1", RecurrenceSet: weekly, StartTime: "18:00", EmojiIcon: "🗑️"}},
+		},
+		{
+			name: "series skips an occurrence from today that is already done",
+			chores: []lib.Chore{
+				{ID: "150-2026-10-01", Title: "Wash car", Status: "complete", DueDate: "2026-10-01", RecurrenceSet: weekly},
+				{ID: "150-2026-10-08", Title: "Wash car", Status: "pending", DueDate: "2026-10-08", RecurrenceSet: weekly},
+			},
+			want: []lib.ChoreData{{Title: "Wash car", DueDate: "2026-10-08", RecurrenceSet: weekly}},
+		},
+		{
+			name: "every-other-week series starts on a real occurrence, keeping its phase",
+			chores: []lib.Chore{
+				{ID: "200-2026-09-21", Title: "Mow lawn", Status: "complete", DueDate: "2026-09-21", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"}},
+				{ID: "200-2026-10-05", Title: "Mow lawn", Status: "pending", DueDate: "2026-10-05", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"}},
+				{ID: "200-2026-10-19", Title: "Mow lawn", Status: "pending", DueDate: "2026-10-19", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"}},
+			},
+			want: []lib.ChoreData{{Title: "Mow lawn", DueDate: "2026-10-05", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO"}}},
+		},
+		{
+			name: "series with no occurrence from today starts on its latest one",
+			chores: []lib.Chore{
+				{ID: "300-2026-06-10", Title: "Clean gutters", Status: "complete", DueDate: "2026-06-10", RecurrenceSet: []string{"RRULE:FREQ=MONTHLY;INTERVAL=3"}},
+				{ID: "300-2026-09-10", Title: "Clean gutters", Status: "pending", DueDate: "2026-09-10", RecurrenceSet: []string{"RRULE:FREQ=MONTHLY;INTERVAL=3"}},
+			},
+			want: []lib.ChoreData{{Title: "Clean gutters", DueDate: "2026-09-10", RecurrenceSet: []string{"RRULE:FREQ=MONTHLY;INTERVAL=3"}}},
+		},
+		{
+			name: "series whose UNTIL is before today is skipped",
+			chores: []lib.Chore{
+				{ID: "400-2026-09-30", Title: "Old schedule", Status: "complete", DueDate: "2026-09-30", RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20260930"}},
+			},
+		},
+		{
+			name: "series whose UNTIL timestamp is before today is skipped",
+			chores: []lib.Chore{
+				{ID: "410-2026-09-30", Title: "Old schedule", Status: "complete", DueDate: "2026-09-30", RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20260930T235959Z"}},
+			},
+		},
+		{
+			name: "UNTIL date on today is kept and sent as recurring_until",
+			chores: []lib.Chore{
+				{ID: "500-2026-10-01", Title: "Water seedlings", Status: "pending", DueDate: "2026-10-01", RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20261001"}},
+			},
+			want: []lib.ChoreData{{Title: "Water seedlings", DueDate: "2026-10-01", RecurringUntil: "2026-10-01", RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20261001"}}},
+		},
+		{
+			name: "UNTIL timestamp is sent as its date",
+			chores: []lib.Chore{
+				{ID: "510-2026-10-02", Title: "Swim lesson bag", Status: "pending", DueDate: "2026-10-02", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=FR;UNTIL=20261030T125959Z"}},
+			},
+			want: []lib.ChoreData{{Title: "Swim lesson bag", DueDate: "2026-10-02", RecurringUntil: "2026-10-30", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=FR;UNTIL=20261030T125959Z"}}},
+		},
+		{
+			name: "recurring rows without an ID are separate series",
+			chores: []lib.Chore{
+				{Title: "Mow lawn", Status: "pending", DueDate: "2026-10-05", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=MO"}},
+				{Title: "Water seedlings", Status: "pending", DueDate: "2026-10-02", RecurrenceSet: []string{"RRULE:FREQ=DAILY"}},
+			},
+			want: []lib.ChoreData{
+				{Title: "Mow lawn", DueDate: "2026-10-05", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=MO"}},
+				{Title: "Water seedlings", DueDate: "2026-10-02", RecurrenceSet: []string{"RRULE:FREQ=DAILY"}},
+			},
+		},
+		{
+			name: "EXDATE lines are sent unchanged",
+			chores: []lib.Chore{
+				{ID: "600-2026-10-03", Title: "Vacuum", Status: "pending", DueDate: "2026-10-03", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=SA", "EXDATE;VALUE=DATE:20261010"}},
+				{ID: "600-2026-10-17", Title: "Vacuum", Status: "pending", DueDate: "2026-10-17", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=SA", "EXDATE;VALUE=DATE:20261010"}},
+			},
+			want: []lib.ChoreData{{Title: "Vacuum", DueDate: "2026-10-03", RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=SA", "EXDATE;VALUE=DATE:20261010"}}},
+		},
+		{
+			name: "one-off chores are created unless complete or skipped",
+			chores: []lib.Chore{
+				{ID: "700", Title: "Fix bike", Status: "pending", DueDate: "2026-10-03", AssigneeID: "cat2"},
+				{ID: "701", Title: "Return library books", Status: "complete", DueDate: "2026-09-20"},
+				{ID: "702", Title: "Wash car", Status: "skipped", DueDate: "2026-09-27"},
+			},
+			want: []lib.ChoreData{{Title: "Fix bike", DueDate: "2026-10-03", AssigneeID: "cat2"}},
+		},
+		{
+			name: "repeat-after-completion chore is created once from its open row",
+			chores: []lib.Chore{
+				{ID: "800", Title: "Water plants", Status: "pending"},
+				{ID: "800-2026-09-28", Title: "Water plants", Status: "complete", DueDate: "2026-09-28"},
+			},
+			want: []lib.ChoreData{{Title: "Water plants"}},
+		},
+		{
+			name: "routine rows are skipped and reported once per series",
+			chores: []lib.Chore{
+				{ID: "900-2026-10-01-0600", Title: "Feed goldfish", Status: "pending", DueDate: "2026-10-01", Routine: true, RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;BYHOUR=6"}},
+				{ID: "900-2026-10-02-0600", Title: "Feed goldfish", Status: "pending", DueDate: "2026-10-02", Routine: true, RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;BYHOUR=6"}},
+			},
+			wantRoutines: []string{"Feed goldfish"},
+		},
+		{
+			name: "up-for-grabs series keeps the flag",
+			chores: []lib.Chore{
+				{ID: "1000-2026-10-07", Title: "Pack lunches", Status: "pending", DueDate: "2026-10-07", UpForGrabs: true, RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=WE"}},
+			},
+			want: []lib.ChoreData{{Title: "Pack lunches", DueDate: "2026-10-07", UpForGrabs: true, RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=WE"}}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, routines := choresToImport(tc.chores, importTestToday)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("creates:\n got %+v\nwant %+v", got, tc.want)
+			}
+			if !reflect.DeepEqual(routines, tc.wantRoutines) {
+				t.Errorf("routines: got %v, want %v", routines, tc.wantRoutines)
+			}
+		})
+	}
+}
+
+// mixedExportChores is a chores export in the shape `skylight export` writes:
+// one row per occurrence, routines included.
+func mixedExportChores() []lib.Chore {
+	bins := []string{"RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH;UNTIL=20261231", "EXDATE;VALUE=DATE:20261015"}
+	lunches := []string{"RRULE:FREQ=WEEKLY;BYDAY=WE"}
+	goldfish := []string{"RRULE:FREQ=DAILY;INTERVAL=1;BYHOUR=6"}
+	return []lib.Chore{
+		{ID: "100-2026-09-24", Title: "Bins", Status: "complete", DueDate: "2026-09-24", AssigneeID: "cat1", Recurring: true, RecurrenceSet: bins, StartTime: "18:00", EmojiIcon: "🗑️"},
+		{ID: "100-2026-10-01", Title: "Bins", Status: "pending", DueDate: "2026-10-01", AssigneeID: "cat1", Recurring: true, RecurrenceSet: bins, StartTime: "18:00", EmojiIcon: "🗑️"},
+		{ID: "100-2026-10-08", Title: "Bins", Status: "pending", DueDate: "2026-10-08", AssigneeID: "cat1", Recurring: true, RecurrenceSet: bins, StartTime: "18:00", EmojiIcon: "🗑️"},
+		{ID: "400-2026-09-30", Title: "Old schedule", Status: "complete", DueDate: "2026-09-30", AssigneeID: "cat1", Recurring: true, RecurrenceSet: []string{"RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20260930"}},
+		{ID: "700", Title: "Fix bike", Description: "Back tire", Status: "pending", DueDate: "2026-10-03", AssigneeID: "cat2"},
+		{ID: "701", Title: "Return library books", Status: "complete", DueDate: "2026-09-20", AssigneeID: "cat2"},
+		{ID: "900-2026-10-01-0600", Title: "Feed goldfish", Status: "pending", DueDate: "2026-10-01", AssigneeID: "cat1", Routine: true, Recurring: true, RecurrenceSet: goldfish},
+		{ID: "900-2026-10-02-0600", Title: "Feed goldfish", Status: "pending", DueDate: "2026-10-02", AssigneeID: "cat1", Routine: true, Recurring: true, RecurrenceSet: goldfish},
+		{ID: "1000-2026-10-07", Title: "Pack lunches", Status: "pending", DueDate: "2026-10-07", UpForGrabs: true, Recurring: true, RecurrenceSet: lunches},
+		{ID: "1000-2026-10-14", Title: "Pack lunches", Status: "pending", DueDate: "2026-10-14", UpForGrabs: true, Recurring: true, RecurrenceSet: lunches},
+		{ID: "1100", Title: "Wipe benches", Status: "pending", DueDate: "2026-10-02", UpForGrabs: true},
+	}
+}
+
+func TestImportChores_RequestBodies(t *testing.T) {
+	var mu sync.Mutex
+	endpoints := map[string]string{}
+	bodies := map[string]lib.ChoreData{}
+	client := newMockClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body lib.ChoreData
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		mu.Lock()
+		endpoints[body.Title] = r.Method + " " + r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		bodies[body.Title] = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if strings.HasSuffix(r.URL.Path, "/create_multiple") {
+			fmt.Fprint(w, `{"data":[{"id":"c1","attributes":{"summary":"x"}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":{"id":"c1","attributes":{"summary":"x"}}}`)
+	})
+
+	var total, failed int
+	stderr := captureStderr(func() {
+		total, failed = importChores(context.Background(), client, mixedExportChores(), importTestToday)
+	})
+
+	if total != 4 || failed != 0 {
+		t.Fatalf("got total=%d failed=%d, want total=4 failed=0", total, failed)
+	}
+	wantEndpoints := map[string]string{
+		"Bins":         "POST create_multiple",
+		"Fix bike":     "POST chores",
+		"Pack lunches": "POST create_multiple",
+		"Wipe benches": "POST create_multiple",
+	}
+	if !reflect.DeepEqual(endpoints, wantEndpoints) {
+		t.Errorf("requests: got %v, want %v", endpoints, wantEndpoints)
+	}
+	wantBodies := map[string]lib.ChoreData{
+		"Bins": {
+			Title: "Bins", DueDate: "2026-10-01", AssigneeID: "cat1", CategoryIDs: []string{"cat1"},
+			RecurrenceSet:  []string{"RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH;UNTIL=20261231", "EXDATE;VALUE=DATE:20261015"},
+			RecurringUntil: "2026-12-31", StartTime: "18:00", EmojiIcon: "🗑️",
+		},
+		"Fix bike":     {Title: "Fix bike", Description: "Back tire", DueDate: "2026-10-03", AssigneeID: "cat2"},
+		"Pack lunches": {Title: "Pack lunches", DueDate: "2026-10-07", UpForGrabs: true, RecurrenceSet: []string{"RRULE:FREQ=WEEKLY;BYDAY=WE"}},
+		"Wipe benches": {Title: "Wipe benches", DueDate: "2026-10-02", UpForGrabs: true},
+	}
+	if !reflect.DeepEqual(bodies, wantBodies) {
+		t.Errorf("bodies:\n got %+v\nwant %+v", bodies, wantBodies)
+	}
+	if n := strings.Count(stderr, "Feed goldfish"); n != 1 {
+		t.Errorf("expected one warning for the routine series, got %d in: %s", n, stderr)
+	}
+
+	out := captureStdout(func() {
+		runImportDryRun(ExportData{Chores: mixedExportChores()}, map[string]bool{exportResourceChores: true}, importTestToday)
+	})
+	if want := fmt.Sprintf("chores     %d items", total); !strings.Contains(out, want) {
+		t.Errorf("expected the dry run to count the %d creates, got: %s", total, out)
+	}
 }
 
 func TestImportLists(t *testing.T) {
@@ -250,7 +476,7 @@ func TestRunImport_AllSuccess(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(func() { err = runImport(context.Background(), client, data, want) })
+	out := captureStdout(func() { err = runImport(context.Background(), client, data, want, importTestToday) })
 
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -269,7 +495,7 @@ func TestRunImport_OnlyRequestedResourcesAreImported(t *testing.T) {
 	want := map[string]bool{exportResourceRewards: true}
 
 	var err error
-	out := captureStdout(func() { err = runImport(context.Background(), client, data, want) })
+	out := captureStdout(func() { err = runImport(context.Background(), client, data, want, importTestToday) })
 
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -291,7 +517,7 @@ func TestRunImport_ReturnsErrorOnPartialFailure(t *testing.T) {
 	}
 
 	var err error
-	_ = captureStdout(func() { err = runImport(context.Background(), client, data, want) })
+	_ = captureStdout(func() { err = runImport(context.Background(), client, data, want, importTestToday) })
 
 	if err == nil {
 		t.Fatal("expected error when some items fail, got nil")
@@ -306,7 +532,7 @@ func TestRunImport_EmptyWant(t *testing.T) {
 	data := ExportData{Rewards: []lib.Reward{{Title: "Reward"}}}
 
 	var err error
-	out := captureStdout(func() { err = runImport(context.Background(), client, data, map[string]bool{}) })
+	out := captureStdout(func() { err = runImport(context.Background(), client, data, map[string]bool{}, importTestToday) })
 
 	if err != nil {
 		t.Fatalf("expected no error for empty want, got: %v", err)

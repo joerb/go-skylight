@@ -1138,6 +1138,57 @@ func TestCreateChoreRecurring(t *testing.T) {
 	}
 }
 
+func TestCreateChore_StartTimeAndEmoji(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    ChoreData
+		wantPath string
+		response string
+	}{
+		{
+			name:     "one-off",
+			input:    ChoreData{Title: "Feed cat", DueDate: "2026-10-05", StartTime: "07:30", EmojiIcon: "🐱"},
+			wantPath: "/api/frames/frame1/chores",
+			response: `{"data":{"id":"c1","attributes":{"summary":"Feed cat","start_time":"07:30","emoji_icon":"🐱"}}}`,
+		},
+		{
+			name:     "series",
+			input:    ChoreData{Title: "Feed cat", DueDate: "2026-10-05", StartTime: "07:30", EmojiIcon: "🐱", RecurrenceSet: []string{"RRULE:FREQ=DAILY"}},
+			wantPath: "/api/frames/frame1/chores/create_multiple",
+			response: `{"data":[{"id":"c1","attributes":{"summary":"Feed cat","start_time":"07:30","emoji_icon":"🐱"}}]}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var body ChoreData
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.wantPath {
+					t.Errorf("path: want %s got %s", tc.wantPath, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer srv.Close()
+
+			client, _ := NewClientWithToken("u", "t", WithBaseURL(srv.URL+"/api"))
+			chore, err := client.CreateChore(context.Background(), "frame1", tc.input)
+			if err != nil {
+				t.Fatalf("CreateChore: %v", err)
+			}
+			if body.StartTime != "07:30" || body.EmojiIcon != "🐱" {
+				t.Errorf("expected start_time and emoji_icon sent, got %+v", body)
+			}
+			if chore.StartTime != "07:30" || chore.EmojiIcon != "🐱" {
+				t.Errorf("expected StartTime and EmojiIcon decoded, got %+v", chore)
+			}
+		})
+	}
+}
+
 // Recurring on its own (bounty create --recurring, template apply) keeps using POST /chores.
 func TestCreateChoreRecurringFlagOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

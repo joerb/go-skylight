@@ -154,6 +154,8 @@ type Chore struct {
 	Description    string   `json:"description,omitempty"`
 	Status         string   `json:"status,omitempty"`
 	DueDate        string   `json:"due_date,omitempty"`
+	StartTime      string   `json:"start_time,omitempty"`
+	EmojiIcon      string   `json:"emoji_icon,omitempty"`
 	Points         int      `json:"points,omitempty"`
 	Recurring      bool     `json:"recurring"`
 	Frequency      string   `json:"frequency,omitempty"`
@@ -177,6 +179,8 @@ type choreAPIAttributes struct {
 	Description    string   `json:"description"`
 	Status         string   `json:"status"`
 	Start          string   `json:"start"`
+	StartTime      string   `json:"start_time"`
+	EmojiIcon      string   `json:"emoji_icon"`
 	RewardPoints   int      `json:"reward_points"`
 	Recurring      bool     `json:"recurring"`
 	Frequency      string   `json:"frequency"`
@@ -213,6 +217,8 @@ func (e *choreAPIEntry) toChore() Chore {
 		Description:    e.Attributes.Description,
 		Status:         e.Attributes.Status,
 		DueDate:        e.Attributes.Start,
+		StartTime:      e.Attributes.StartTime,
+		EmojiIcon:      e.Attributes.EmojiIcon,
 		Points:         e.Attributes.RewardPoints,
 		Recurring:      e.Attributes.Recurring,
 		Frequency:      e.Attributes.Frequency,
@@ -236,6 +242,8 @@ type ChoreData struct {
 	Title          string   `json:"summary,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	DueDate        string   `json:"start,omitempty"`
+	StartTime      string   `json:"start_time,omitempty"`
+	EmojiIcon      string   `json:"emoji_icon,omitempty"`
 	Points         int      `json:"reward_points,omitempty"`
 	Status         string   `json:"status,omitempty"`
 	AssigneeID     string   `json:"category_id,omitempty"`
