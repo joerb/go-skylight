@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `status` counts list items from `ListLists` instead of one `GetList` per list; its JSON output no longer has `list_errors` (#494)
+
+### Added
+- `ListItem`/`ListItemData`: `Section`, read from the API and sent by `AddListItem` and `UpdateListItem`
+
+### Fixed
+- `export`: lists were saved without their items; `ListLists` now returns each list's items, so the `list all`, `grocery list` and `home` ITEMS column is no longer always 0 and their JSON output includes `list_items` (#493, #494)
+- `import`: list items are recreated in their original order with their completed status and section (#493, #494)
+
 ## [v0.2.5] - 2026-09-30
 
 ### Changed
