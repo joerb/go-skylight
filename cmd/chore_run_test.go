@@ -544,3 +544,62 @@ func TestRequireWindowPair(t *testing.T) {
 		})
 	}
 }
+
+func TestChoreListCmd_UpForGrabsHint(t *testing.T) {
+	// If an earlier test permanently set --week via pflag.Set(), the RunE
+	// takes its early-return path before the hint. Skip rather than flake.
+	if choreListCmd.Flags().Changed("week") {
+		t.Skip("--week flag permanently latched by an earlier test; hint path unreachable")
+	}
+	newCmdTestClient(t, choreMockHandler())
+	origUpForGrabs, origQuiet := choreUpForGrabs, quiet
+	choreUpForGrabs, quiet = false, false
+	t.Cleanup(func() { choreUpForGrabs, quiet = origUpForGrabs, origQuiet })
+
+	stderr := captureStderr(func() {
+		captureStdout(func() {
+			if err := choreListCmd.RunE(choreListCmd, nil); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(stderr, "--up-for-grabs") {
+		t.Errorf("expected hint mentioning --up-for-grabs on stderr, got: %q", stderr)
+	}
+}
+
+func TestChoreListCmd_NoHintWhenUpForGrabs(t *testing.T) {
+	newCmdTestClient(t, choreMockHandler())
+	origUpForGrabs := choreUpForGrabs
+	choreUpForGrabs = true
+	t.Cleanup(func() { choreUpForGrabs = origUpForGrabs })
+
+	stderr := captureStderr(func() {
+		captureStdout(func() {
+			if err := choreListCmd.RunE(choreListCmd, nil); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	})
+	if strings.Contains(stderr, "--up-for-grabs") {
+		t.Errorf("expected no hint when --up-for-grabs is set, got: %q", stderr)
+	}
+}
+
+func TestChoreListCmd_NoHintWhenQuiet(t *testing.T) {
+	newCmdTestClient(t, choreMockHandler())
+	origUpForGrabs, origQuiet := choreUpForGrabs, quiet
+	choreUpForGrabs, quiet = false, true
+	t.Cleanup(func() { choreUpForGrabs, quiet = origUpForGrabs, origQuiet })
+
+	stderr := captureStderr(func() {
+		captureStdout(func() {
+			if err := choreListCmd.RunE(choreListCmd, nil); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	})
+	if strings.Contains(stderr, "--up-for-grabs") {
+		t.Errorf("expected no hint when --quiet is set, got: %q", stderr)
+	}
+}
