@@ -17,6 +17,7 @@ var (
 	bountyRecurring   bool
 	bountyChoreID     string
 	bountyRewardID    string
+	bountyAll         bool
 	bountyAfter       string
 	bountyBefore      string
 )
@@ -30,6 +31,20 @@ points to redeem the paired reward.
 
   # Create a $10-point bounty due next Friday
   skylight bounty create --title "Wash the car" --points 10 --reward-title "Ice cream" --due-date 2026-06-05`,
+}
+
+func validateBountyDateRange() error {
+	if bountyAfter != "" {
+		if err := validateDate(bountyAfter); err != nil {
+			return fmt.Errorf("--after: %w", err)
+		}
+	}
+	if bountyBefore != "" {
+		if err := validateDate(bountyBefore); err != nil {
+			return fmt.Errorf("--before: %w", err)
+		}
+	}
+	return nil
 }
 
 var bountyCreateCmd = &cobra.Command{
@@ -82,15 +97,8 @@ Use --after and/or --before to widen the window and include overdue bounties:
 			return err
 		}
 
-		if bountyAfter != "" {
-			if err := validateDate(bountyAfter); err != nil {
-				return fmt.Errorf("--after: %w", err)
-			}
-		}
-		if bountyBefore != "" {
-			if err := validateDate(bountyBefore); err != nil {
-				return fmt.Errorf("--before: %w", err)
-			}
+		if err := validateBountyDateRange(); err != nil {
+			return err
 		}
 
 		client, err := getClient()
@@ -114,9 +122,26 @@ Use --after and/or --before to widen the window and include overdue bounties:
 var bountyDeleteCmd = &cobra.Command{
 	Use:   subDelete,
 	Short: "Delete a bounty (removes both the chore and the paired reward)",
+	Long: `Delete a bounty by specifying its chore ID and reward ID.
+
+Use --all to bulk-delete all matched bounties in a single command.
+Combine with --after/--before to widen the date window when overdue bounties
+are not visible in the default list (yesterday → +1 month):
+
+  skylight bounty delete --all --dry-run
+  skylight bounty delete --all --yes
+  skylight bounty delete --all --after 2026-08-01 --yes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireFrameID(); err != nil {
 			return err
+		}
+
+		if bountyAll {
+			return runBountyDeleteAll(cmd)
+		}
+
+		if bountyChoreID == "" || bountyRewardID == "" {
+			return fmt.Errorf("--chore-id and --reward-id are required (or use --all to bulk-delete)")
 		}
 
 		if dryRun {
@@ -140,6 +165,53 @@ var bountyDeleteCmd = &cobra.Command{
 		printSuccess("Bounty deleted successfully")
 		return nil
 	},
+}
+
+func runBountyDeleteAll(cmd *cobra.Command) error {
+	if err := validateBountyDateRange(); err != nil {
+		return err
+	}
+
+	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	bounties, err := client.ListBounties(cmd.Context(), frameID, lib.BountyListOptions{
+		After:  bountyAfter,
+		Before: bountyBefore,
+	})
+	if err != nil {
+		return fmt.Errorf("listing bounties: %w", err)
+	}
+
+	if len(bounties) == 0 {
+		printSuccess("No bounties found to delete")
+		return nil
+	}
+
+	if dryRun {
+		for _, b := range bounties {
+			printDryRun("delete bounty %q (chore %s + reward %s)", b.Chore.Title, b.Chore.ID, b.Reward.ID)
+		}
+		return nil
+	}
+
+	if !confirmAction(fmt.Sprintf("Delete all %d bounties?", len(bounties))) {
+		return nil
+	}
+
+	deleted := 0
+	for _, b := range bounties {
+		if err := client.DeleteBounty(cmd.Context(), frameID, b.Chore.ID, b.Reward.ID); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: failed to delete bounty %q: %v\n", b.Chore.Title, err)
+			continue
+		}
+		deleted++
+	}
+
+	printSuccessf("Deleted %d/%d bounties", deleted, len(bounties))
+	return nil
 }
 
 var bountyUpdateCmd = &cobra.Command{
@@ -208,12 +280,13 @@ func init() {
 	bountyListCmd.Flags().StringVar(&bountyAfter, "after", "", "Only include chores due after this date (YYYY-MM-DD); overrides default window")
 	bountyListCmd.Flags().StringVar(&bountyBefore, "before", "", "Only include chores due before this date (YYYY-MM-DD); overrides default window")
 
-	bountyDeleteCmd.Flags().StringVar(&bountyChoreID, "chore-id", "", "Chore ID of the bounty")
-	bountyDeleteCmd.Flags().StringVar(&bountyRewardID, "reward-id", "", "Reward ID of the bounty")
+	bountyDeleteCmd.Flags().StringVar(&bountyChoreID, "chore-id", "", "Chore ID of the bounty (required without --all)")
+	bountyDeleteCmd.Flags().StringVar(&bountyRewardID, "reward-id", "", "Reward ID of the bounty (required without --all)")
+	bountyDeleteCmd.Flags().BoolVar(&bountyAll, "all", false, "Delete all matched bounties (lists then bulk-deletes)")
+	bountyDeleteCmd.Flags().StringVar(&bountyAfter, "after", "", "With --all: only include chores due after this date (YYYY-MM-DD)")
+	bountyDeleteCmd.Flags().StringVar(&bountyBefore, "before", "", "With --all: only include chores due before this date (YYYY-MM-DD)")
 	bountyDeleteCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview without making API calls")
 	bountyDeleteCmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation prompt")
-	markFlagRequired(bountyDeleteCmd, "chore-id")
-	markFlagRequired(bountyDeleteCmd, "reward-id")
 
 	bountyUpdateCmd.Flags().StringVar(&bountyChoreID, "chore-id", "", "Chore ID of the bounty")
 	bountyUpdateCmd.Flags().StringVar(&bountyRewardID, "reward-id", "", "Reward ID of the bounty")
