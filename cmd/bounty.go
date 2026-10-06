@@ -17,6 +17,8 @@ var (
 	bountyRecurring   bool
 	bountyChoreID     string
 	bountyRewardID    string
+	bountyAfter       string
+	bountyBefore      string
 )
 
 var bountyCmd = &cobra.Command{
@@ -68,9 +70,27 @@ var bountyCreateCmd = &cobra.Command{
 var bountyListCmd = &cobra.Command{
 	Use:   subList,
 	Short: "List bounties (matched chore+reward pairs)",
+	Long: `List active bounties by matching pending chores with unredeemed rewards by point value.
+
+By default, only chores due within the window yesterday → +1 month are shown.
+Use --after and/or --before to widen the window and include overdue bounties:
+
+  skylight bounty list --after 2026-08-01
+  skylight bounty list --after 2026-08-01 --before 2026-10-31`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireFrameID(); err != nil {
 			return err
+		}
+
+		if bountyAfter != "" {
+			if err := validateDate(bountyAfter); err != nil {
+				return fmt.Errorf("--after: %w", err)
+			}
+		}
+		if bountyBefore != "" {
+			if err := validateDate(bountyBefore); err != nil {
+				return fmt.Errorf("--before: %w", err)
+			}
 		}
 
 		client, err := getClient()
@@ -78,7 +98,10 @@ var bountyListCmd = &cobra.Command{
 			return err
 		}
 
-		bounties, err := client.ListBounties(cmd.Context(), frameID)
+		bounties, err := client.ListBounties(cmd.Context(), frameID, lib.BountyListOptions{
+			After:  bountyAfter,
+			Before: bountyBefore,
+		})
 		if err != nil {
 			return fmt.Errorf("listing bounties: %w", err)
 		}
@@ -181,6 +204,9 @@ func init() {
 	markFlagRequired(bountyCreateCmd, subTitle)
 	markFlagRequired(bountyCreateCmd, subPoints)
 	markFlagRequired(bountyCreateCmd, "reward-title")
+
+	bountyListCmd.Flags().StringVar(&bountyAfter, "after", "", "Only include chores due after this date (YYYY-MM-DD); overrides default window")
+	bountyListCmd.Flags().StringVar(&bountyBefore, "before", "", "Only include chores due before this date (YYYY-MM-DD); overrides default window")
 
 	bountyDeleteCmd.Flags().StringVar(&bountyChoreID, "chore-id", "", "Chore ID of the bounty")
 	bountyDeleteCmd.Flags().StringVar(&bountyRewardID, "reward-id", "", "Reward ID of the bounty")

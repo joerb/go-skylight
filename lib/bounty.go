@@ -93,8 +93,18 @@ func (c *Client) UpdateBounty(ctx context.Context, frameID, choreID, rewardID st
 
 // ListBounties lists pending chores with points and unredeemed rewards,
 // matching them by point value as a heuristic.
-func (c *Client) ListBounties(ctx context.Context, frameID string) ([]Bounty, error) {
+// When opts.After or opts.Before are empty, defaults of yesterday and +1 month are used.
+func (c *Client) ListBounties(ctx context.Context, frameID string, opts BountyListOptions) ([]Bounty, error) {
 	today := time.Now()
+
+	after := opts.After
+	if after == "" {
+		after = today.AddDate(0, 0, -1).Format(DateFormat)
+	}
+	before := opts.Before
+	if before == "" {
+		before = today.AddDate(0, 1, 0).Format(DateFormat)
+	}
 
 	var (
 		chores    []Chore
@@ -109,8 +119,8 @@ func (c *Client) ListBounties(ctx context.Context, frameID string) ([]Bounty, er
 		defer wg.Done()
 		chores, choreErr = c.ListChores(ctx, frameID, ChoreListOptions{
 			Status: choreStatusPending,
-			After:  today.AddDate(0, 0, -1).Format(DateFormat),
-			Before: today.AddDate(0, 1, 0).Format(DateFormat),
+			After:  after,
+			Before: before,
 		})
 	}()
 	go func() {
