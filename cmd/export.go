@@ -234,7 +234,7 @@ centered on today. Use --resources to limit which resource types are included.`,
 		}
 		if want[exportResourceBounties] {
 			launch(exportResourceBounties, func() error {
-				bounties, err := client.ListBounties(ctx, frameID)
+				bounties, err := client.ListBounties(ctx, frameID, lib.BountyListOptions{})
 				if err == nil {
 					mu.Lock()
 					data.Bounties = bounties

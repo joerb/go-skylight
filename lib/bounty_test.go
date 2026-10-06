@@ -311,7 +311,7 @@ func TestListBountiesChoreError(t *testing.T) {
 	defer func() { SkylightURL = old }()
 
 	client, _ := NewClientWithToken("u", "t")
-	_, err := client.ListBounties(context.Background(), "frame1")
+	_, err := client.ListBounties(context.Background(), "frame1", BountyListOptions{})
 	if err == nil {
 		t.Fatal("expected error when ListChores fails")
 	}
@@ -339,7 +339,7 @@ func TestListBountiesRewardError(t *testing.T) {
 	defer func() { SkylightURL = old }()
 
 	client, _ := NewClientWithToken("u", "t")
-	_, err := client.ListBounties(context.Background(), "frame1")
+	_, err := client.ListBounties(context.Background(), "frame1", BountyListOptions{})
 	if err == nil {
 		t.Fatal("expected error when ListRewards fails")
 	}
@@ -400,7 +400,7 @@ func TestListBounties(t *testing.T) {
 			defer func() { SkylightURL = old }()
 
 			client, _ := NewClientWithToken("u", "t")
-			bounties, err := client.ListBounties(context.Background(), "frame1")
+			bounties, err := client.ListBounties(context.Background(), "frame1", BountyListOptions{})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("wantErr=%v got %v", tc.wantErr, err)
 			}
@@ -449,7 +449,7 @@ func TestListBountiesDateRange(t *testing.T) {
 	defer func() { SkylightURL = old }()
 
 	client, _ := NewClientWithToken("u", "t")
-	if _, err := client.ListBounties(context.Background(), "frame1"); err != nil {
+	if _, err := client.ListBounties(context.Background(), "frame1", BountyListOptions{}); err != nil {
 		t.Fatalf("ListBounties: %v", err)
 	}
 
@@ -469,6 +469,125 @@ func TestListBountiesDateRange(t *testing.T) {
 	}
 	if !beforeT.After(afterT) {
 		t.Errorf("expected before (%s) > after (%s)", gotBefore, gotAfter)
+	}
+}
+
+func TestListBountiesCustomDateRange(t *testing.T) {
+	var gotAfter, gotBefore string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/frames/frame1/chores":
+			gotAfter = r.URL.Query().Get("after")
+			gotBefore = r.URL.Query().Get("before")
+			if err := json.NewEncoder(w).Encode(choreAPIResponse{}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		case "/api/frames/frame1/rewards":
+			if err := json.NewEncoder(w).Encode(rewardAPIResponse{}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	old := SkylightURL
+	SkylightURL = srv.URL + "/api"
+	defer func() { SkylightURL = old }()
+
+	client, _ := NewClientWithToken("u", "t")
+	if _, err := client.ListBounties(context.Background(), "frame1", BountyListOptions{
+		After:  "2026-08-01",
+		Before: "2026-10-31",
+	}); err != nil {
+		t.Fatalf("ListBounties: %v", err)
+	}
+
+	if gotAfter != "2026-08-01" {
+		t.Errorf("after: want %q got %q", "2026-08-01", gotAfter)
+	}
+	if gotBefore != "2026-10-31" {
+		t.Errorf("before: want %q got %q", "2026-10-31", gotBefore)
+	}
+}
+
+func TestListBountiesPartialOpts(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        BountyListOptions
+		checkAfter  func(t *testing.T, got string)
+		checkBefore func(t *testing.T, got string)
+	}{
+		{
+			name: "only After set — Before falls back to default +1mo",
+			opts: BountyListOptions{After: "2026-08-01"},
+			checkAfter: func(t *testing.T, got string) {
+				t.Helper()
+				if got != "2026-08-01" {
+					t.Errorf("after: want %q got %q", "2026-08-01", got)
+				}
+			},
+			checkBefore: func(t *testing.T, got string) {
+				t.Helper()
+				if got == "" {
+					t.Error("before: expected non-empty default, got empty")
+				}
+			},
+		},
+		{
+			name: "only Before set — After falls back to default yesterday",
+			opts: BountyListOptions{Before: "2026-12-31"},
+			checkAfter: func(t *testing.T, got string) {
+				t.Helper()
+				if got == "" {
+					t.Error("after: expected non-empty default, got empty")
+				}
+			},
+			checkBefore: func(t *testing.T, got string) {
+				t.Helper()
+				if got != "2026-12-31" {
+					t.Errorf("before: want %q got %q", "2026-12-31", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotAfter, gotBefore string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/frames/frame1/chores":
+					gotAfter = r.URL.Query().Get("after")
+					gotBefore = r.URL.Query().Get("before")
+					if err := json.NewEncoder(w).Encode(choreAPIResponse{}); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+					}
+				case "/api/frames/frame1/rewards":
+					if err := json.NewEncoder(w).Encode(rewardAPIResponse{}); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+					}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			old := SkylightURL
+			SkylightURL = srv.URL + "/api"
+			defer func() { SkylightURL = old }()
+
+			client, _ := NewClientWithToken("u", "t")
+			if _, err := client.ListBounties(context.Background(), "frame1", tc.opts); err != nil {
+				t.Fatalf("ListBounties: %v", err)
+			}
+			tc.checkAfter(t, gotAfter)
+			tc.checkBefore(t, gotBefore)
+		})
 	}
 }
 

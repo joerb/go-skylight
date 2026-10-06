@@ -985,6 +985,13 @@ type Bounty struct {
 	Reward Reward `json:"reward"`
 }
 
+// BountyListOptions holds optional filters for listing bounties.
+// When After or Before are empty, ListBounties falls back to its default window (yesterday → +1 month).
+type BountyListOptions struct {
+	After  string
+	Before string
+}
+
 // RotationData holds the input for creating a chore rotation schedule.
 type RotationData struct {
 	Chores      []string `json:"chores"`

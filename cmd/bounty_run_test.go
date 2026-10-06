@@ -136,6 +136,42 @@ func TestBountyCreateCmd_InvalidDate(t *testing.T) {
 	}
 }
 
+func TestBountyListCmd_InvalidAfterDate(t *testing.T) {
+	origAfter := bountyAfter
+	bountyAfter = "not-a-date"
+	t.Cleanup(func() { bountyAfter = origAfter })
+
+	origFrameID := frameID
+	frameID = "test-frame"
+	t.Cleanup(func() { frameID = origFrameID })
+
+	err := bountyListCmd.RunE(bountyListCmd, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid --after date, got nil")
+	}
+	if !strings.Contains(err.Error(), "--after") {
+		t.Errorf("expected --after in error, got: %v", err)
+	}
+}
+
+func TestBountyListCmd_InvalidBeforeDate(t *testing.T) {
+	origBefore := bountyBefore
+	bountyBefore = "not-a-date"
+	t.Cleanup(func() { bountyBefore = origBefore })
+
+	origFrameID := frameID
+	frameID = "test-frame"
+	t.Cleanup(func() { frameID = origFrameID })
+
+	err := bountyListCmd.RunE(bountyListCmd, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid --before date, got nil")
+	}
+	if !strings.Contains(err.Error(), "--before") {
+		t.Errorf("expected --before in error, got: %v", err)
+	}
+}
+
 func TestBountyCmdExists(t *testing.T) {
 	assertCommandRegistered(t, rootCmd, "bounty")
 }
