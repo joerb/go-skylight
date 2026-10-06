@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/sebrandon1/go-skylight/lib"
 	"github.com/spf13/cobra"
@@ -63,6 +64,15 @@ list by date range, and --status to filter by pending/complete/skipped.
 var choreListCmd = &cobra.Command{
 	Use:   subList,
 	Short: "List chores",
+	Long: `List chores for a Skylight frame.
+
+NOTE: up-for-grabs (unassigned) chores are excluded from results by default.
+Pass --up-for-grabs to include them:
+
+  skylight chore list --up-for-grabs --after 2026-06-01 --before 2026-06-30
+
+Use --status to filter by pending/complete/skipped, and --after/--before for
+a date window (both flags are required together when either is supplied).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireFrameID(); err != nil {
 			return err
@@ -130,6 +140,9 @@ var choreListCmd = &cobra.Command{
 
 		maybeLoadCatNames(ctx, client)
 		printOutput(chores)
+		if !choreUpForGrabs && !quiet {
+			fmt.Fprintln(os.Stderr, "hint: up-for-grabs (unassigned) chores are excluded; use --up-for-grabs to include them")
+		}
 		return nil
 	},
 }
@@ -486,7 +499,7 @@ func init() {
 	choreListCmd.Flags().StringVar(&choreAfter, "after", "", "Start of date window (YYYY-MM-DD); defaults to the current month")
 	choreListCmd.Flags().StringVar(&choreBefore, "before", "", "End of date window (YYYY-MM-DD); defaults to the current month")
 	choreListCmd.Flags().BoolVar(&choreIncludeLate, "include-late", false, "Include late chores")
-	choreListCmd.Flags().BoolVar(&choreUpForGrabs, "up-for-grabs", false, "Only show up-for-grabs chores")
+	choreListCmd.Flags().BoolVar(&choreUpForGrabs, "up-for-grabs", false, "Include up-for-grabs (unassigned) chores; excluded from results by default")
 	choreListCmd.Flags().StringVar(&choreWeek, "week", "", "Show weekly calendar view; optionally specify YYYY-MM-DD to select the week")
 	choreListCmd.Flags().Lookup("week").NoOptDefVal = "current"
 
